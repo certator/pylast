@@ -693,7 +693,7 @@ class _ShelfCacheBackend(object):
 #        self.shelf = shelve.open(file_path, writeback=True)
         self.conn = sqlite3.connect('cache.sqlite.db')
         try:
-            self.conn.execute('CREATE TABLE cache (key VARCHAR(100), val TEXT)')
+            self.conn.execute('CREATE TABLE cache (key VARCHAR(100) PRIMARY KEY, val TEXT)')
             self.conn.commit()
         except:
             pass
