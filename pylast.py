@@ -810,8 +810,9 @@ class _Request(object):
         #self.network._delay_call()    # enable it if you want.
         
         stime = max(0, 1.0 - (time.time() - self.last_download))
-        print 'Sleeping ' + str(stime) 
-        time.sleep(stime)
+        if stime > 0:
+            print 'sleeping ' + str(stime) 
+            time.sleep(stime)
         self.last_download = time.time()
         
         data = []
@@ -1009,6 +1010,25 @@ class _BaseObject(object):
         """Returns the most common set of parameters between all objects."""
         
         return {}
+
+    def _get_paged_iter(self, method, cont_name, item_name, instantiate_fn):
+        page = 1
+                
+        while True:
+            print 'page', page
+            params = {"page": page}
+            params.update(self._get_params())
+            doc = self._request(method, True, params)
+            topcont = doc.getElementsByTagName(cont_name)[0]
+            totalPages = int(topcont.getAttribute('totalPages'))
+                              
+            for item in doc.getElementsByTagName(item_name):
+                yield instantiate_fn(item)
+        
+            page += 1
+            if page > totalPages:
+                raise StopIteration
+
     
     def __hash__(self):
         return hash(self.network) + \
@@ -2289,31 +2309,19 @@ class Tag(_BaseObject):
             seq.append( TopItem(Track(artist, title, self.network), playcount) )
         
         return seq
-
+    
     def get_top_tracks_iter(self):
-        page = 1
         
+        def instantiate_toptrack(item):
+            title = _extract(item, "name")
+            artist = _extract(item, "name", 1)
+            playcount = _number(_extract(item, "playcount"))
+            return TopItem(Track(artist, title, self.network), playcount)
         
+        it = self._get_paged_iter('tag.getTopTracks', 'toptracks', 'track', instantiate_toptrack)
         while True:
-            print 'Page', page
-            params = {"page": page}
-            params.update(self._get_params())
-            doc = self._request("tag.getTopTracks", True, params)
-            toptracks = doc.getElementsByTagName('toptracks')[0]
-            totalPages = int(toptracks.getAttribute('totalPages'))
-                  
-            
-            for track in doc.getElementsByTagName('track'):
-                
-                title = _extract(track, "name")
-                artist = _extract(track, "name", 1)
-                playcount = _number(_extract(track, "playcount"))
-                
-                yield TopItem(Track(artist, title, self.network), playcount) 
+            yield it.next()
         
-            page += 1
-            if page > totalPages:
-                raise StopIteration
         
     
     def get_top_artists(self):
@@ -2553,6 +2561,20 @@ class Track(_BaseObject, _Taggable):
             seq.append(SimilarItem(Track(artist, title, self.network), match))
         
         return seq
+
+#    def get_similar_iter(self):
+#        
+#        def instantiate_similar(node):
+#            title = _extract(node, 'name')
+#            artist = _extract(node, 'name', 1)
+#            match = _number(_extract(node, "match"))
+#            
+#            return SimilarItem(Track(artist, title, self.network), match)
+#        
+#        it = self._get_paged_iter('track.getSimilar', 'similartracks', 'track', instantiate_similar)
+#        while True:
+#            yield it.next()
+
 
     def get_top_fans(self, limit = None):
         """Returns a list of the Users who played this track."""
