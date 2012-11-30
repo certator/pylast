@@ -2291,16 +2291,17 @@ class Tag(_BaseObject):
         return seq
 
     def get_top_tracks_iter(self):
-        page = 0
+        page = 1
         
         
         while True:
-            
+            print 'Page', page
             params = {"page": page}
             params.update(self._get_params())
             doc = self._request("tag.getTopTracks", True, params)
             toptracks = doc.getElementsByTagName('toptracks')[0]
-            totalPages = toptracks.getAttribute('totalPages')
+            totalPages = int(toptracks.getAttribute('totalPages'))
+                  
             
             for track in doc.getElementsByTagName('track'):
                 
