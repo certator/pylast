@@ -1017,6 +1017,25 @@ class _BaseObject(object):
             params = self._get_params()
             
         return _Request(self.network, method_name, params).execute(cacheable)
+
+    def _request2(self, method_name, cacheable = False, params = None):
+        if not params:
+            params = self._get_params()
+            
+        parsed_key = self._parsed_cache_key(method_name, params)
+        
+        raw_seq = None
+        if cacheable and self.network.cache_backend_response:
+            raw_seq = self.network.cache_backend_response.get_unpickle(parsed_key)        
+        
+        if raw_seq:
+            return (None, raw_seq)
+        return (_Request(self.network, method_name, params).execute(cacheable), None)
+
+    def _store_parsed_response(self, response, method_name, params = None):
+        parsed_key = self._parsed_cache_key(method_name, params)
+        print 'save to response cache ' + parsed_key
+        self.network.cache_backend_response.set_pickle(parsed_key, response)
     
     def _parsed_cache_key(self, method_name, params = None):
         if not params:
@@ -1047,6 +1066,35 @@ class _BaseObject(object):
             if page > totalPages:
                 raise StopIteration
 
+    def _get_paged_iter2(self, method, cont_name, item_name, parse_fn, instantiate_fn):
+        page = 1
+                
+        
+                
+        while True:
+            print 'page', page
+            params = {"page": page}
+            params.update(self._get_params())
+            doc, raw_seq = self._request2(method, True, params)
+            
+            if raw_seq == None:
+                raw_seq = {"items":[]}
+                topcont = doc.getElementsByTagName(cont_name)[0]
+                raw_seq["totalPages"] = int(topcont.getAttribute('totalPages'))
+                              
+                for item in doc.getElementsByTagName(item_name):
+                    pitem = parse_fn(item)
+                    raw_seq["items"].append(pitem)
+                self._store_parsed_response(raw_seq, method, params)
+            
+            for pitem in raw_seq["items"]:
+                yield instantiate_fn(pitem)
+        
+            page += 1
+            if page > raw_seq["totalPages"]:
+                raise StopIteration
+
+ 
     
     def __hash__(self):
         return hash(self.network) + \
@@ -1154,13 +1202,9 @@ class _Taggable(object):
         
     def get_top_tags(self, limit=None):
         """Returns a list of the most frequently used Tags on this object."""
-        parsed_key = self._parsed_cache_key(self.ws_prefix + '.getTopTags')
-        raw_seq = None
-        if self.network.cache_backend_response:
-            raw_seq = self.network.cache_backend_response.get_unpickle(parsed_key)
+        doc, raw_seq = self._request2(self.ws_prefix + '.getTopTags', True)
 
         if raw_seq == None:
-            doc = self._request(self.ws_prefix + '.getTopTags', True)
             
             elements = doc.getElementsByTagName('tag')
             
@@ -1173,9 +1217,9 @@ class _Taggable(object):
                                 "tag_name": tag_name,
                                 "tagcount": tagcount,
                                 })
-                
-            self.network.cache_backend_response.set_pickle(parsed_key, raw_seq)
-        
+            
+            self._store_parsed_response(raw_seq, self.ws_prefix + '.getTopTags')
+                    
         seq = []   
         for r in raw_seq:    
             seq.append(TopItem(Tag(r['tag_name'], self.network), r['tagcount']))
@@ -2330,16 +2374,26 @@ class Tag(_BaseObject):
     def get_top_tracks(self):
         """Returns a list of the most played Tracks by this artist."""
         
-        doc = self._request("tag.getTopTracks", True)
+        doc, raw_seq = self._request2("tag.getTopTracks", True)
         
+        
+        if raw_seq == None:
+            raw_seq = []
+            for track in doc.getElementsByTagName('track'):
+                
+                title = _extract(track, "name")
+                artist = _extract(track, "name", 1)
+                playcount = _number(_extract(track, "playcount"))
+                raw_seq.append({
+                                "title" : title,
+                                "artist" : artist,
+                                "playcount" : playcount,                                
+                        })
+            self._store_parsed_response(raw_seq, 'tag.getTopTracks')
+            
         seq = []
-        for track in doc.getElementsByTagName('track'):
-            
-            title = _extract(track, "name")
-            artist = _extract(track, "name", 1)
-            playcount = _number(_extract(track, "playcount"))
-            
-            seq.append( TopItem(Track(artist, title, self.network), playcount) )
+        for r in raw_seq:
+            seq.append( TopItem(Track(r['artist'], r['title'], self.network), r['playcount']) )
         
         return seq
     
@@ -2355,6 +2409,23 @@ class Tag(_BaseObject):
         while True:
             yield it.next()
         
+    def get_top_tracks_iter2(self):
+        
+        def parse_toptrack(item):
+            title = _extract(item, "name")
+            artist = _extract(item, "name", 1)
+            playcount = _number(_extract(item, "playcount"))
+            return {
+                    "title": title,
+                    "artist": artist,
+                    "playcount": playcount,
+                    }
+        def instantiate_toptrack(r):
+            return TopItem(Track(r['artist'], r['title'], self.network), r['playcount'])
+        
+        it = self._get_paged_iter2('tag.getTopTracks', 'toptracks', 'track', parse_toptrack, instantiate_toptrack)
+        while True:
+            yield it.next()
         
     
     def get_top_artists(self):
@@ -2583,12 +2654,7 @@ class Track(_BaseObject, _Taggable):
     def get_similar(self):
         """Returns similar tracks for this track on the network, based on listening data. """
         
-        doc = self._request('track.getSimilar', True)
-        
-        parsed_key = self._parsed_cache_key('track.getSimilar')
-        raw_seq = None
-        if self.network.cache_backend_response:
-            raw_seq = self.network.cache_backend_response.get_unpickle(parsed_key)
+        doc, raw_seq = self._request2('track.getSimilar', True)
         
         seq = []
         if raw_seq == None:
@@ -2602,25 +2668,12 @@ class Track(_BaseObject, _Taggable):
                     "artist": artist,
                     "match": match
                 })
-            self.network.cache_backend_response.set_pickle(parsed_key, raw_seq)
+            self._store_parsed_response(raw_seq, 'track.getSimilar')
             
         for r in raw_seq:
             seq.append(SimilarItem(Track(r["artist"], r['title'], self.network), r['match']))
         
         return seq
-
-#    def get_similar_iter(self):
-#        
-#        def instantiate_similar(node):
-#            title = _extract(node, 'name')
-#            artist = _extract(node, 'name', 1)
-#            match = _number(_extract(node, "match"))
-#            
-#            return SimilarItem(Track(artist, title, self.network), match)
-#        
-#        it = self._get_paged_iter('track.getSimilar', 'similartracks', 'track', instantiate_similar)
-#        while True:
-#            yield it.next()
 
 
     def get_top_fans(self, limit = None):
