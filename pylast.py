@@ -1028,7 +1028,9 @@ class _BaseObject(object):
         if cacheable and self.network.cache_backend_response:
             raw_seq = self.network.cache_backend_response.get_unpickle(parsed_key)        
         
-        if raw_seq:
+#        print '_request2', raw_seq
+        
+        if raw_seq != None:
             return (None, raw_seq)
         return (_Request(self.network, method_name, params).execute(cacheable), None)
 
