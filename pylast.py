@@ -155,6 +155,7 @@ class _Network(object):
         self.urls = urls
         
         self.cache_backend = None
+        self.cache_backend_response = None
         self.proxy_enabled = False
         self.proxy = None
         self.last_call_time = 0
@@ -350,7 +351,7 @@ class _Network(object):
         
         return self.proxy
         
-    def enable_caching(self, file_path = None):
+    def enable_caching(self, file_path = None, file_path_response = None):
         """Enables caching request-wide for all cachable calls.
         
         * file_path: A file path for the backend storage file. If 
@@ -361,6 +362,8 @@ class _Network(object):
             file_path = tempfile.mktemp(prefix="pylast_tmp_")
         
         self.cache_backend = _ShelfCacheBackend(file_path)
+        if file_path_response:
+            self.cache_backend_response = _ShelfCacheBackend(file_path_response)
             
     def disable_caching(self):
         """Disables all caching features."""
@@ -685,13 +688,13 @@ def get_librefm_network(api_key="", api_secret="", session_key = "", username = 
     
     return LibreFMNetwork(api_key, api_secret, session_key, username, password_hash)
 
-import sqlite3
+import sqlite3, pickle, base64
 
 class _ShelfCacheBackend(object):
     """Used as a backend for caching cacheable requests."""
     def __init__(self, file_path = None):
 #        self.shelf = shelve.open(file_path, writeback=True)
-        self.conn = sqlite3.connect('cache.sqlite.db')
+        self.conn = sqlite3.connect(file_path)
         try:
             self.conn.execute('CREATE TABLE cache (key VARCHAR(100) PRIMARY KEY, val TEXT)')
             self.conn.commit()
@@ -706,6 +709,12 @@ class _ShelfCacheBackend(object):
             return r[0]
         return None
     
+    def get_unpickle(self, key):
+        val = self.get_xml(key)
+        if val != None:
+            return pickle.loads(base64.decodestring(val))
+        return None
+    
     def set_xml(self, key, xml_string):
 #        self.shelf[key] = xml_string
         if self.get_xml(key):
@@ -713,6 +722,9 @@ class _ShelfCacheBackend(object):
         else: 
             self.conn.execute('INSERT INTO cache VALUES(?,?)', (key, xml_string))
         self.conn.commit()
+
+    def set_pickle(self, key, data):
+        self.set_xml(key, base64.encodestring(pickle.dumps(data)))
     
     def has_key(self, key):
 #        return key in self.shelf.keys()
@@ -1006,6 +1018,12 @@ class _BaseObject(object):
             
         return _Request(self.network, method_name, params).execute(cacheable)
     
+    def _parsed_cache_key(self, method_name, params = None):
+        if not params:
+            params = self._get_params()
+            
+        return _Request(self.network, method_name, params)._get_cache_key()
+    
     def _get_params(self):
         """Returns the most common set of parameters between all objects."""
         
@@ -1074,6 +1092,7 @@ class _Taggable(object):
 
     def get_tags(self):
         """Returns a list of the tags set by the user to this object."""
+
         
         # Uncacheable because it can be dynamically changed by the user.
         params = self._get_params()
@@ -1135,17 +1154,31 @@ class _Taggable(object):
         
     def get_top_tags(self, limit=None):
         """Returns a list of the most frequently used Tags on this object."""
-        
-        doc = self._request(self.ws_prefix + '.getTopTags', True)
-        
-        elements = doc.getElementsByTagName('tag')
-        seq = []
-        
-        for element in elements:
-            tag_name = _extract(element, 'name')
-            tagcount = _extract(element, 'count')
+        parsed_key = self._parsed_cache_key(self.ws_prefix + '.getTopTags')
+        raw_seq = None
+        if self.network.cache_backend_response:
+            raw_seq = self.network.cache_backend_response.get_unpickle(parsed_key)
+
+        if raw_seq == None:
+            doc = self._request(self.ws_prefix + '.getTopTags', True)
             
-            seq.append(TopItem(Tag(tag_name, self.network), tagcount))
+            elements = doc.getElementsByTagName('tag')
+            
+            raw_seq = []
+            
+            for element in elements:
+                tag_name = _extract(element, 'name')
+                tagcount = _extract(element, 'count')
+                raw_seq.append({
+                                "tag_name": tag_name,
+                                "tagcount": tagcount,
+                                })
+                
+            self.network.cache_backend_response.set_pickle(parsed_key, raw_seq)
+        
+        seq = []   
+        for r in raw_seq:    
+            seq.append(TopItem(Tag(r['tag_name'], self.network), r['tagcount']))
         
         if limit:
             seq = seq[:limit]
@@ -2552,13 +2585,27 @@ class Track(_BaseObject, _Taggable):
         
         doc = self._request('track.getSimilar', True)
         
+        parsed_key = self._parsed_cache_key('track.getSimilar')
+        raw_seq = None
+        if self.network.cache_backend_response:
+            raw_seq = self.network.cache_backend_response.get_unpickle(parsed_key)
+        
         seq = []
-        for node in doc.getElementsByTagName("track"):
-            title = _extract(node, 'name')
-            artist = _extract(node, 'name', 1)
-            match = _number(_extract(node, "match"))
+        if raw_seq == None:
+            raw_seq = []
+            for node in doc.getElementsByTagName("track"):
+                title = _extract(node, 'name')
+                artist = _extract(node, 'name', 1)
+                match = _number(_extract(node, "match"))
+                raw_seq.append({
+                    "title": title,
+                    "artist": artist,
+                    "match": match
+                })
+            self.network.cache_backend_response.set_pickle(parsed_key, raw_seq)
             
-            seq.append(SimilarItem(Track(artist, title, self.network), match))
+        for r in raw_seq:
+            seq.append(SimilarItem(Track(r["artist"], r['title'], self.network), r['match']))
         
         return seq
 
